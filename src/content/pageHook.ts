@@ -117,8 +117,71 @@
   }
 
   /* ---------------------------------------------------------------- *
-   * XHR 钩子（部分接口走 XHR，只钩 fetch 会漏）
+   * 主动请求通道
+   *
+   * 为什么必须由页面主世界代发：chat.deepseek.com 位于华为云 WAF 之后，
+   * 服务端要求 Cookie（HWWAFSESID / HWWAFSESTIME）与一组客户端身份头
+   * （x-client-platform、x-app-version…），还要求 Origin/Referer/
+   * Sec-Fetch-* 三者自洽。这些只有页面自己发请求时才是天然正确的——
+   * 从 service worker 或隔离世界发，缺 Cookie 会被直接判 400。
+   *
+   * 因此：内容脚本只负责转达请求意图，真正的 fetch 在这里执行。
    * ---------------------------------------------------------------- */
+
+  interface BridgeRequest {
+    id: string
+    path: string
+  }
+
+  function reply(id: string, payload: unknown): void {
+    window.dispatchEvent(new CustomEvent(`ds-archiver:response:${id}`, { detail: payload }))
+  }
+
+  window.addEventListener('ds-archiver:request', (event) => {
+    const detail = (event as CustomEvent<BridgeRequest>).detail
+    if (!detail || typeof detail.path !== 'string' || typeof detail.id !== 'string') return
+
+    // 只允许本域 /api/ 只读路径，防止这个通道被当成任意请求代理
+    if (!detail.path.startsWith('/api/')) {
+      reply(detail.id, { ok: false, error: 'BAD_PATH' })
+      return
+    }
+
+    // 用页面原生 fetch：Cookie 自动带上，Sec-Fetch-* 与 Origin 由浏览器补齐，
+    // 与用户在页面上正常操作时完全一致。
+    void originalFetch
+      .call(window, detail.path, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { accept: '*/*' },
+      })
+      .then(async (response) => {
+        const text = await response.text()
+        reply(detail.id, { ok: response.ok, status: response.status, body: text })
+      })
+      .catch((error: unknown) => {
+        reply(detail.id, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      })
+  })
+
+  /* ---------------------------------------------------------------- *
+   * fetch 钩子（只读嗅探）
+   * ---------------------------------------------------------------- */
+  window.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    try {
+      if (isApiUrl(input)) {
+        const token = extractAuth(init?.headers)
+          // Request 对象上的头需要单独读
+          ?? (typeof Request !== 'undefined' && input instanceof Request
+            ? input.headers.get('authorization')
+            : null)
+        publishToken(token)
+      }
+    } catch {
+      // 嗅探失败绝不能影响页面请求
+    }
+    return originalFetch.call(this, input as RequestInfo, init)
+  }
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader
 

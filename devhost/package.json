@@ -1,0 +1,15 @@
+{
+  "name": "ds-archiver-devhost",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Chat Archiver 的本地调试宿主：内嵌浏览器加载真实 DeepSeek 页面，注入扩展脚本，用于端到端验证",
+  "main": "main.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "start:debug": "electron . --devtools"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

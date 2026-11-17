@@ -6,3 +6,4 @@ Thumbs.db
 *.local
 .vscode/
 .idea/
+devhost/node_modules/

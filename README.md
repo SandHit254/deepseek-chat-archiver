@@ -148,19 +148,85 @@ node scripts/make-icons.mjs
 4. 打开 https://chat.deepseek.com 并登录
 5. 点工具栏里的扩展图标，面板从右侧滑出
 
+### 本地调试宿主（Electron）
+
+侧载扩展时开发者看不到真实运行情况，只能靠截图与贴日志。`devhost/` 提供一个
+内嵌浏览器宿主，加载**真实** `chat.deepseek.com` 并注入同样的脚本，本地即可跑通全链路：
+
+```bash
+cd devhost
+npm install
+npm start            # 或 npm run start:debug 直接打开 DevTools
+```
+
+- 启动后自动打开面板；`Ctrl+Shift+D` 可再次切换
+- 页面控制台的 warn/error 会转发到终端
+- 归档保存走系统保存对话框，产物落在你选的路径
+- 它是调试工具，不是发布形态；正式分发仍用 MV3 扩展
+
 ---
 
-## 七、已知限制与风险
+## 七、网络层的关键约束（踩过的坑）
+
+### 7.1 请求必须由页面主世界代发
+
+**所有 API 请求必须由页面主世界代发，不能在 service worker 里直接 fetch。**
+
+早期版本把请求放在 background 里，用 `credentials: 'omit'` 直连
+`chat.deepseek.com/api/v0/...`，结果稳定返回 **HTTP 400**。原因是该域名位于
+华为云 WAF 之后，服务端要求：
+
+| 要求 | service worker 直连 | 页面主世界代发 |
+|---|---|---|
+| Cookie（`HWWAFSESID` / `HWWAFSESTIME` 等） | 缺 | 浏览器自动带 |
+| `Origin` / `Referer` | 需手工伪造 | 天然正确 |
+| `Sec-Fetch-Site/Mode/Dest` | 缺失或不自洽 | 浏览器按同源补齐 |
+| 客户端身份头（`x-client-platform` 等） | 需手工维护且会过期 | 页面自己就会带 |
+
+所以现在的分工是：`pageHook.ts` 负责真正的 `fetch`（`credentials: 'include'`，
+与用户正常操作页面完全一致），`requester.ts` 只把请求意图转达过去。
+**改这里之前先想清楚：一旦把请求移出页面上下文，400 就会回来。**
+
+判据：修好后错误从 `HTTP 400` 变成 `INVALID_TOKEN`（未登录时），说明请求已经
+穿过 WAF 到达业务层。
+
+### 7.2 Shadow DOM 的三条约束
+
+面板挂在 Shadow DOM 内，以下三点必须遵守，否则会出现「样式全丢」「面板卡死」
+这类看起来毫不相关的故障：
+
+1. **CSS 变量定义在 `:host`**，不能写 `:root` —— shadow tree 里没有 `:root`
+   节点，所有 `var(--x)` 会静默失效，表现为配色/间距/圆角全部丢失。
+2. **元素查找必须从 shadow root 开始**，不能用 `document.querySelector` ——
+   后者查不到 shadow tree 内部，会抛「面板元素缺失」并让整个面板停在加载态。
+3. **`[hidden]` 需要 `display: none !important`** —— 浏览器默认的 `[hidden]`
+   规则优先级极低，会被 `.ds-btn { display: inline-flex }` 之类的自定义样式覆盖，
+   表现为「明明设了 hidden 却还在显示」。
+
+### 7.3 调试宿主里的 chrome 桩
+
+`devhost/` 用 `contextBridge.exposeInMainWorld` 暴露桩对象，注意它暴露到的是
+**主世界**；而 Chromium 页面自带一个只读的 `window.chrome`，不能整体覆盖，
+只能 `Object.defineProperty` 修补其 `runtime` 属性。桩先挂在
+`__dsArchiverStub__` 上，再由引导脚本合并过去。
+
+---
+
+## 八、已知限制与风险
 
 - **接口可能变更**。字段名做过兼容层（`chat_messages`/`messages`、`thinking`/`reasoning_content`、`signed_path`/`url`），但路径或结构大变时需要改 `core/normalize.ts` 与 `core/api.ts`。
 - **`fetch_page` 分页行为被官方改过**。带分页参数时可能只回前 50 条且 `has_more` 恒为 `true`。本项目用「游标是否推进 + 是否有新数据 + 硬上限」三重条件判断终止，不单纯依赖 `has_more`。
 - **附件签名有时效**。`signed_path` 指向 `files.deepseeksvc.com` 且带签名，必须在导出当时下载，隔天再导旧链接会失效。签名过期时接口回 HTML 错误页，本项目识别后跳过并记录，不会把错误页存成附件。
 - **有风控**。对同一 cookie 的并发请求敏感。导出全程串行，每 5 个会话间隔 800ms。
 - **单附件上限 200 MB**，超限跳过并记录，避免一个大文件拖垮整批。
+- **Shadow DOM 相关约束**：面板挂在 Shadow DOM 内，因此
+  ① CSS 变量必须定义在 `:host`（`:root` 在 shadow tree 里不匹配）；
+  ② 元素查找不能用 `document.querySelector`，必须从 shadow root 查；
+  ③ `[hidden]` 需要 `display:none !important` 才能压过自定义 `display`。
 - **合规**：只读取你自己的账号、纯本地处理、不上传任何第三方。DeepSeek 官方 ToS 未明确授权批量抓取，账号被限流的风险自负。
 
 ---
 
-## 八、许可
+## 九、许可
 
 仅供个人备份自有对话使用。

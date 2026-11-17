@@ -1,4 +1,4 @@
-import { createBackgroundRequester } from './requester'
+import { createPageBridgeRequester } from './requester'
 import { mountPanel } from './panel'
 import { injectPageHook, relayTokenUpdates, waitForBridge } from './bridge'
 
@@ -83,7 +83,7 @@ function openPanel(): void {
     // 界面上毫无线索——早期版本就是这样静默失效的。
     try {
       teardown = mountPanel({
-        request: createBackgroundRequester(),
+        request: createPageBridgeRequester(),
         // 面板在 Shadow DOM 内，必须把根节点传进去
         root: wrapper,
         onClose: () => closePanel(),
@@ -189,6 +189,11 @@ async function bootstrap(): Promise<void> {
     const data = message as { type?: string } | null
     if (data?.type === 'toggle-panel') togglePanel()
     return false
+  })
+
+  // 调试宿主用 DOM 事件触发，不依赖 onMessage 的注册时机
+  window.addEventListener('ds-archiver:toggle-panel', () => {
+    togglePanel()
   })
 
   watchBody()
