@@ -136,22 +136,41 @@ export function planSession(
   return { session: conversation.session, folder, files, attachments }
 }
 
+/**
+ * 附件下载结果，用于回填清单里缺失的字段。
+ *
+ * 接口返回的 mime_type / file_size 经常是空的（实测 34 个附件全为空），
+ * 所以清单要能接收下载时实际拿到的类型与字节数。
+ */
+export interface AttachmentDownloadFact {
+  mimeType?: string
+  byteLength?: number
+}
+
 /** 附件清单内容：谁在哪个消息里传了什么 */
-export function attachmentManifest(planned: PlannedSession): string {
+export function attachmentManifest(
+  planned: PlannedSession,
+  facts?: Map<string, AttachmentDownloadFact>,
+): string {
   return `${JSON.stringify(
     {
       sessionId: planned.session.id,
       title: planned.session.title,
-      attachments: planned.attachments.map((item) => ({
-        file: item.path.split('/').pop(),
-        originalName: item.attachment.fileName,
-        mimeType: item.attachment.mimeType,
-        size: item.attachment.size ?? null,
-        width: item.attachment.width ?? null,
-        height: item.attachment.height ?? null,
-        messageId: item.messageId,
-        sourceUrl: item.attachment.url,
-      })),
+      attachments: planned.attachments.map((item) => {
+        const fact = facts?.get(item.path)
+        return {
+          file: item.path.split('/').pop(),
+          originalName: item.attachment.fileName,
+          // 实际下载拿到的类型优先，接口字段兜底
+          mimeType: fact?.mimeType || item.attachment.mimeType || null,
+          // 字节数同理：接口的 file_size 不可信，实测与真实大小无关
+          size: fact?.byteLength ?? item.attachment.size ?? null,
+          width: item.attachment.width ?? null,
+          height: item.attachment.height ?? null,
+          messageId: item.messageId,
+          sourceUrl: item.attachment.url,
+        }
+      }),
     },
     null,
     2,

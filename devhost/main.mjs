@@ -157,7 +157,7 @@ async function injectExtension(webContents) {
         console.log(`[devhost] 截图已保存：${shotPath}`)
 
         // 列表就绪后，若开启了自动导出，则点一次「开始导出」
-        if (listLoaded && process.argv.includes('--auto-export')) {
+        if (listLoaded && isAutoExport()) {
           await runExportFlow(webContents)
         }
         return
@@ -276,42 +276,164 @@ async function probeState(webContents) {
 }
 
 /**
+ * 是否处于自动导出模式。
+ *
+ * 支持 `--auto-export` 与 `--auto-export=attach` 两种写法，
+ * 统一在这里判断，避免各处重复写 includes 导致漏改。
+ */
+function isAutoExport() {
+  return process.argv.some((arg) => arg === '--auto-export' || arg.startsWith('--auto-export='))
+}
+
+/**
+ * 按文件名猜 MIME。
+ *
+ * 文件服务有时不回 content-type，或者回 application/octet-stream，
+ * 那样写进 zip 的 data URL 就丢了类型信息。用扩展名兜一层。
+ */
+const MIME_BY_EXT = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  json: 'application/json',
+  csv: 'text/csv',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  zip: 'application/zip',
+}
+
+function guessMimeFromName(nameOrUrl) {
+  try {
+    // URL 里可能带查询串，先剥掉再取扩展名
+    const clean = String(nameOrUrl).split('?')[0].split('#')[0]
+    const match = /\.([a-z0-9]+)$/i.exec(clean)
+    if (!match) return ''
+    return MIME_BY_EXT[match[1].toLowerCase()] ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * 自动跑一遍导出流程。
  *
- * 只选前 2 个会话，避免一次导出 345 个把调试拖成几十分钟（每个会话之间
- * 有 800ms 限流间隔）。验证目标是链路通不通，不是跑满全量。
+ * --auto-export          导出前 2 个会话（四格式 + 尝试下载附件）
+ * --auto-export=attach   先扫描有附件的会话，只导出那些（专门验证附件链路）
  */
 async function runExportFlow(webContents) {
   console.log('\n[devhost] ===== 开始自动导出验证 =====')
 
-  // 1. 只保留前两个会话，并开启全部格式
-  const selected = await webContents.executeJavaScript(`(() => {
+  const attachMode = process.argv.some((arg) => arg === '--auto-export=attach')
+
+  /*
+   * 附件模式：先扫一遍，找出真正带附件的会话。
+   *
+   * 附件链路（签名 URL 拼装、跨域取文件、zip 内路径映射）只有在真有附件时
+   * 才会被走到，普通会话验不出来。所以这里先探测，再针对性地导。
+   */
+  let attachmentSessions = []
+  if (attachMode) {
+    console.log('[devhost] 扫描带附件的会话…')
+    attachmentSessions = await webContents.executeJavaScript(`(async () => {
+      const raw = localStorage.getItem('userToken');
+      let token = '';
+      try {
+        const t = (raw ?? '').trim();
+        token = t.startsWith('{') ? (JSON.parse(t).value ?? '') : t;
+      } catch { token = ''; }
+      if (!token) return [];
+
+      const headers = { accept: '*/*', authorization: token };
+      const listRes = await fetch('/api/v0/chat_session/fetch_page?count=100', { headers, credentials: 'include' });
+      const listJson = await listRes.json();
+      const sessions = listJson?.data?.biz_data?.chat_sessions ?? [];
+
+      const hits = [];
+      for (const s of sessions) {
+        const res = await fetch('/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(s.id), { headers, credentials: 'include' });
+        if (!res.ok) continue;
+        const json = await res.json();
+        const messages = json?.data?.biz_data?.chat_messages ?? [];
+        const files = [];
+        for (const m of messages) {
+          for (const f of (m.files ?? [])) files.push({ messageId: m.message_id, name: f.file_name, path: f.signed_path, mime: f.mime_type });
+          for (const frag of (m.fragments ?? [])) {
+            if (String(frag.type).toUpperCase() !== 'FILE') continue;
+            for (const f of (frag.files ?? [])) files.push({ messageId: m.message_id, name: f.file_name, path: f.signed_path, mime: f.mime_type });
+            if (frag.file) files.push({ messageId: m.message_id, name: frag.file.file_name, path: frag.file.signed_path, mime: frag.file.mime_type });
+          }
+        }
+        if (files.length > 0) {
+          hits.push({ id: s.id, title: s.title, fileCount: files.length, files: files.slice(0, 3) });
+          if (hits.length >= 5) break;
+        }
+      }
+      return hits;
+    })()`, true)
+
+    console.log(`[devhost] 命中 ${attachmentSessions.length} 个带附件的会话`)
+    console.log('[devhost] 明细：', JSON.stringify(attachmentSessions, null, 2))
+
+    if (attachmentSessions.length === 0) {
+      console.log('[devhost] 账号里没有带附件的会话，无法验证附件链路')
+      return
+    }
+  }
+
+  // 1. 选择会话：附件模式只选命中的，普通模式选前两个
+  const selected = await webContents.executeJavaScript(`((targetTitles) => {
     const host = document.getElementById('ds-archiver-host');
     const root = host && host.shadowRoot;
     if (!root) return { ok: false, reason: '面板不存在' };
 
-    const items = root.querySelectorAll('.ds-item input[type=checkbox]');
-    // 取消所有勾选
-    for (const box of items) {
-      if (box.checked) box.click();
+    const labels = Array.from(root.querySelectorAll('.ds-item'));
+    // 先全部取消
+    for (const label of labels) {
+      const box = label.querySelector('input[type=checkbox]');
+      if (box && box.checked) box.click();
     }
-    // 勾选前两个
-    for (let i = 0; i < Math.min(2, items.length); i += 1) {
-      items[i].click();
+
+    let picked = 0;
+    if (targetTitles && targetTitles.length > 0) {
+      // 按标题匹配
+      for (const label of labels) {
+        const title = label.querySelector('.ds-item-title')?.textContent ?? '';
+        if (!targetTitles.includes(title)) continue;
+        const box = label.querySelector('input[type=checkbox]');
+        if (box && !box.checked) { box.click(); picked += 1; }
+        if (picked >= targetTitles.length) break;
+      }
+    } else {
+      // 无目标则选前两个
+      for (const label of labels) {
+        if (picked >= 2) break;
+        const box = label.querySelector('input[type=checkbox]');
+        if (box && !box.checked) { box.click(); picked += 1; }
+      }
     }
-    // 全选四种格式，验证 docx/json 链路
+
+    // 全选四种格式
     for (const box of root.querySelectorAll('input[name=format]')) {
       if (!box.checked) box.click();
     }
-    const formats = Array.from(root.querySelectorAll('input[name=format]')).map(b => b.value + ':' + b.checked);
+
     return {
       ok: true,
-      total: items.length,
+      picked,
       checked: root.querySelector('#sessionCount')?.textContent,
       buttonText: root.querySelector('#btnExport')?.textContent,
-      formats,
     };
-  })()`, true)
+  })(${JSON.stringify(attachmentSessions.map((s) => s.title))})`, true)
   console.log('[devhost] 选择结果：', JSON.stringify(selected))
 
   if (!selected.ok) return
@@ -465,13 +587,37 @@ app.whenReady().then(() => {
       try {
         const response = await session.defaultSession.fetch(url)
         if (!response.ok) return { ok: false, error: `HTTP ${response.status}` }
-        const contentType = response.headers.get('content-type') ?? 'application/octet-stream'
-        if (contentType.startsWith('text/html')) {
-          return { ok: false, error: '附件链接已失效（签名可能过期）' }
-        }
+        const contentType = (response.headers.get('content-type') ?? '').toLowerCase()
         const buffer = Buffer.from(await response.arrayBuffer())
-        const dataUrl = `data:${contentType.split(';')[0]};base64,${buffer.toString('base64')}`
-        return { ok: true, dataUrl, mimeType: contentType, byteLength: buffer.byteLength }
+
+        /*
+         * 判断「下载到的是不是错误页」不能只看 content-type。
+         *
+         * 早期版本写 `contentType.startsWith('text/html')` 就拒绝，结果把
+         * 真实存在的 .txt / .json 附件（服务端也可能回 text/html）一起丢了。
+         * 实测 34 个附件里有 5 个（xlsx/json/txt）因此漏下。
+         *
+         * 改成看内容特征：真附件不会以 HTML 文档开头。
+         */
+        const head = buffer.subarray(0, 200).toString('utf8').trim().toLowerCase()
+        const looksLikeErrorPage = head.startsWith('<!doctype html')
+          || head.startsWith('<html')
+          || (head.includes('<head') && head.includes('</head'))
+        if (looksLikeErrorPage) {
+          return { ok: false, error: `附件返回了 HTML 错误页（content-type=${contentType}）` }
+        }
+        if (buffer.byteLength === 0) {
+          return { ok: false, error: '附件内容为空' }
+        }
+
+        // content-type 缺失时按扩展名补一个，避免 data URL 变成 octet-stream
+        let mime = contentType.split(';')[0].trim()
+        if (mime === '' || mime === 'text/html' || mime === 'application/octet-stream') {
+          mime = guessMimeFromName(url) || 'application/octet-stream'
+        }
+
+        const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`
+        return { ok: true, dataUrl, mimeType: mime, byteLength: buffer.byteLength }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
       }
@@ -488,7 +634,7 @@ app.whenReady().then(() => {
        * 自动化验证模式下不弹窗，直接写到临时目录。
        * 否则对话框会阻塞整条自动流程，无人值守就跑不下去。
        */
-      const autoMode = process.argv.includes('--auto-export')
+      const autoMode = isAutoExport()
       let targetPath
       if (autoMode) {
         targetPath = join(app.getPath('temp'), filename)

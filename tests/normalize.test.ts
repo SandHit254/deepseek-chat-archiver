@@ -22,15 +22,34 @@ describe('时间归一化', () => {
 })
 
 describe('附件地址还原', () => {
-  it('/file 路径改到文件服务域名并补 ty=p', () => {
-    const url = resolveFileUrl({ signed_path: '/file?a=1' })
+  /*
+   * ty 是必填参数，服务端只接受 p / t / r：
+   *   实测报错 `missing field 'ty'` 与
+   *   `ty: unknown variant 'o', expected one of 'p', 't', 'r'`
+   * 图片用 p（预览），文档用 r（原始）。
+   */
+  it('图片走 ty=p', () => {
+    const url = resolveFileUrl({ signed_path: '/file?a=1', file_name: 'pic.png', mime_type: 'image/png' })
     expect(url).toBe('https://files.deepseeksvc.com/api/file?a=1&ty=p')
   })
 
-  it('已有查询参数时不覆盖 ty', () => {
-    const url = resolveFileUrl({ signed_path: '/file?a=1&ty=o' })
-    expect(url).toContain('ty=o')
-    expect(url).not.toContain('ty=p')
+  it('文档走 ty=r（原始文件）', () => {
+    const url = resolveFileUrl({
+      signed_path: '/file?a=1',
+      file_name: 'report.xlsx',
+      mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    expect(url).toBe('https://files.deepseeksvc.com/api/file?a=1&ty=r')
+  })
+
+  it('无扩展名时默认走 ty=r（不带 ty 会被服务端拒）', () => {
+    const url = resolveFileUrl({ signed_path: '/file?a=1' })
+    expect(url).toBe('https://files.deepseeksvc.com/api/file?a=1&ty=r')
+  })
+
+  it('已有 ty 时不覆盖', () => {
+    const url = resolveFileUrl({ signed_path: '/file?a=1&ty=t', file_name: 'pic.png' })
+    expect(url).toContain('ty=t')
   })
 
   it('绝对 url 原样保留', () => {

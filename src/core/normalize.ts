@@ -58,8 +58,18 @@ function textOf(value: unknown): string {
 /**
  * 把 signed_path / url 变成可直接 fetch 的绝对地址。
  *
- * `/file?xxx` 这种是文件服务的路径，需要改域名并补 `ty=p`（预览变体，
- * 网页端自己也是这么取的）。其他情况按当前站点补全。
+ * `/file?xxx` 属于独立文件服务，需要换域名。关键在 `ty` 参数——
+ * 它是**必填**的，服务端只接受三个值（实测报错信息：
+ * `ty: unknown variant 'o', expected one of 'p', 't', 'r'`）：
+ *
+ * | ty | 含义 | 适用 |
+ * |----|------|------|
+ * | p  | 预览 | 图片（网页端就这么取） |
+ * | t  | 文本 | 部分文本类资源 |
+ * | r  | 原始 | 文档（xlsx/json/txt/pdf…） |
+ *
+ * 早期版本对所有文件统一加 `ty=p`，结果文档类全部 400；不加 ty 又会报
+ * `missing field 'ty'`。正确做法是按类型分流：图片 p，其余 r。
  */
 export function resolveFileUrl(file: RawFile): string | null {
   const raw = typeof file.signed_path === 'string' && file.signed_path !== ''
@@ -74,7 +84,9 @@ export function resolveFileUrl(file: RawFile): string | null {
   if (/^\/file(?:\?|$)/.test(raw)) {
     try {
       const url = new URL(`${FILE_SERVICE_BASE}${raw}`)
-      if (!url.searchParams.has('ty')) url.searchParams.set('ty', 'p')
+      if (!url.searchParams.has('ty')) {
+        url.searchParams.set('ty', isImageFile(file) ? 'p' : 'r')
+      }
       return url.href
     } catch {
       return raw

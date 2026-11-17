@@ -203,7 +203,40 @@ npm start            # 或 npm run start:debug 直接打开 DevTools
    规则优先级极低，会被 `.ds-btn { display: inline-flex }` 之类的自定义样式覆盖，
    表现为「明明设了 hidden 却还在显示」。
 
-### 7.3 调试宿主里的 chrome 桩
+### 7.3 附件下载的 `ty` 参数（必填）
+
+附件地址形如 `https://files.deepseeksvc.com/api/file?file_id=…&state=…`，其中
+**`ty` 是必填参数**，服务端只接受三个值：
+
+| `ty` | 含义 | 适用 |
+|---|---|---|
+| `p` | 预览 | 图片（网页端就这么取） |
+| `t` | 文本 | 部分文本类资源 |
+| `r` | 原始 | 文档（xlsx / json / txt / pdf…） |
+
+实测报错（这是唯一可靠的依据，官方无文档）：
+
+```
+不带 ty     → 400 missing field `ty`
+ty=o        → 400 ty: unknown variant `o`, expected one of `p`, `t`, `r`
+ty=p（文档） → 400（无 body）
+ty=r（文档） → 200，返回原始字节
+```
+
+类型判断依据 `file_name` / `mime_type` / 扩展名，三者都可能缺失，所以下载时
+做了回退：第一次失败就在 `p` 与 `r` 之间换一种再试。**不能「删掉 ty 重试」**，
+那必然报 `missing field ty`。
+
+> 实测记录：修复前 34 个附件里有 5 个文档（xlsx/json/txt）全部 400；修复后
+> 42 个附件全部下载成功，包括 3 个 xlsx、1 个 1 MB 的 json、1 个 txt。
+
+### 7.4 附件清单的字段要在下载后回填
+
+接口返回的 `mime_type` 与 `file_size` 实测**全为空 / 不可信**。因此
+`attachments/_manifest.json` 必须在下载完成后再写，用实际拿到的
+`content-type` 与 `byteLength` 回填，否则清单里类型为空、大小与实际不符。
+
+### 7.5 调试宿主里的 chrome 桩
 
 `devhost/` 用 `contextBridge.exposeInMainWorld` 暴露桩对象，注意它暴露到的是
 **主世界**；而 Chromium 页面自带一个只读的 `window.chrome`，不能整体覆盖，
@@ -216,7 +249,8 @@ npm start            # 或 npm run start:debug 直接打开 DevTools
 
 - **接口可能变更**。字段名做过兼容层（`chat_messages`/`messages`、`thinking`/`reasoning_content`、`signed_path`/`url`），但路径或结构大变时需要改 `core/normalize.ts` 与 `core/api.ts`。
 - **`fetch_page` 分页行为被官方改过**。带分页参数时可能只回前 50 条且 `has_more` 恒为 `true`。本项目用「游标是否推进 + 是否有新数据 + 硬上限」三重条件判断终止，不单纯依赖 `has_more`。
-- **附件签名有时效**。`signed_path` 指向 `files.deepseeksvc.com` 且带签名，必须在导出当时下载，隔天再导旧链接会失效。签名过期时接口回 HTML 错误页，本项目识别后跳过并记录，不会把错误页存成附件。
+- **附件签名有时效**。`signed_path` 指向 `files.deepseeksvc.com` 且带 `state` 签名，必须在导出当时下载。签名失效时接口回 HTML 错误页或 400，本项目识别后跳过并记录，不会把错误页存成附件。
+- **`ty` 参数必须按类型给对**（见 7.3）。给错会让整个附件 400，且响应体常常是空的，很难凭空猜出原因。已实现 `p`/`r` 自动回退。
 - **有风控**。对同一 cookie 的并发请求敏感。导出全程串行，每 5 个会话间隔 800ms。
 - **单附件上限 200 MB**，超限跳过并记录，避免一个大文件拖垮整批。
 - **Shadow DOM 相关约束**：面板挂在 Shadow DOM 内，因此

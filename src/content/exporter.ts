@@ -67,20 +67,61 @@ export interface ExportContext {
 }
 
 /** 通过 background 下载附件，失败返回原因 */
-async function downloadViaBackground(
-  url: string,
-): Promise<{ ok: boolean; dataUrl?: string; error?: string }> {
+interface AttachmentDownloadResult {
+  ok: boolean
+  dataUrl?: string
+  error?: string
+  /** 实际拿到的 MIME，用于回填附件清单 */
+  mimeType?: string
+  /** 实际字节数，接口的 file_size 不可信 */
+  byteLength?: number
+}
+
+async function downloadOnce(url: string): Promise<AttachmentDownloadResult> {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'attachment:download',
       payload: { url },
-    }) as { ok: boolean; dataUrl?: string; error?: string } | undefined
+    }) as AttachmentDownloadResult | undefined
 
     if (!response) return { ok: false, error: '后台无响应，请重新加载扩展' }
     return response
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * 下载附件，必要时在 `ty=p` 与 `ty=r` 之间自动回退。
+ *
+ * 为什么要回退：`ty` 是必填参数，图片用 `p`（预览）、文档用 `r`（原始）。
+ * 我们的类型判断可能不准（signed_path 常常没有扩展名、mime_type 也常为空），
+ * 所以第一次失败后换另一种形式再试，用实际结果兜底。
+ *
+ * 注意不能「删掉 ty 再试」——服务端会直接回 `missing field 'ty'`。
+ */
+async function downloadViaBackground(url: string): Promise<AttachmentDownloadResult> {
+  const first = await downloadOnce(url)
+  if (first.ok) return first
+
+  let alternate: string | null = null
+  try {
+    const parsed = new URL(url)
+    const current = parsed.searchParams.get('ty')
+    // 只在两个合法值之间切换
+    if (current === 'p') parsed.searchParams.set('ty', 'r')
+    else if (current === 'r') parsed.searchParams.set('ty', 'p')
+    else return first
+    alternate = parsed.href
+  } catch {
+    return first
+  }
+
+  if (alternate === null || alternate === url) return first
+
+  const second = await downloadOnce(alternate)
+  // 两种都失败时返回第一次的错误（原始形式更接近真实意图）
+  return second.ok ? second : first
 }
 
 /** data URL → Uint8Array，用于塞进 zip */
@@ -159,9 +200,11 @@ async function renderSession(
     }
   }
 
-  if (planOptions.includeAttachments && planned.attachments.length > 0) {
-    files[`${planned.folder}/attachments/_manifest.json`] = strToU8(attachmentManifest(planned))
-  }
+  /*
+   * 附件清单不在这里生成。
+   * 它需要下载后才能拿到的 mimeType / byteLength，由调用方在下载完成后写入，
+   * 否则字段会是空的（接口返回的 mime_type / file_size 实测全为空）。
+   */
 
   return files
 }
@@ -253,6 +296,15 @@ export async function runExport(context: ExportContext, options: ExportOptions):
     Object.assign(zipEntries, files)
 
     if (planOptions.includeAttachments) {
+      /*
+       * 先下载附件，再写清单。
+       *
+       * 顺序很重要：接口返回的 mime_type / file_size 实测全为空（34 个附件
+       * 无一例外），清单里要的是下载时实际拿到的类型与字节数。早期版本先
+       * 写清单后下载，导致清单里类型全空、大小与实际不符。
+       */
+      const facts = new Map<string, { mimeType?: string; byteLength?: number }>()
+
       for (let fileIndex = 0; fileIndex < planned.attachments.length; fileIndex += 1) {
         const attachment = planned.attachments[fileIndex]!
         report({
@@ -270,6 +322,10 @@ export async function runExport(context: ExportContext, options: ExportOptions):
         if (result.ok && result.dataUrl) {
           zipEntries[attachment.path] = dataUrlToBytes(result.dataUrl)
           totalAttachments += 1
+          facts.set(attachment.path, {
+            ...(result.mimeType ? { mimeType: result.mimeType } : {}),
+            ...(result.byteLength !== undefined ? { byteLength: result.byteLength } : {}),
+          })
         } else {
           attachmentFailures += 1
           errors.push({
@@ -278,6 +334,11 @@ export async function runExport(context: ExportContext, options: ExportOptions):
           })
         }
       }
+
+      // 下载完成后用真实值写清单
+      zipEntries[`${planned.folder}/attachments/_manifest.json`] = strToU8(
+        attachmentManifest(planned, facts),
+      )
     }
 
     totalMessages += view.activePath.length

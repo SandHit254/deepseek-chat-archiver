@@ -108,6 +108,40 @@ const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024
 /** 附件域名白名单：只允许 DeepSeek 自己的文件服务 */
 const ALLOWED_ATTACHMENT_HOSTS = ['files.deepseeksvc.com', 'chat.deepseek.com']
 
+/**
+ * 按文件名猜 MIME。
+ *
+ * 文件服务有时不回 content-type，或回 text/html、application/octet-stream，
+ * 那样写进 zip 的 data URL 就丢了类型信息。用扩展名兜一层。
+ */
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  json: 'application/json',
+  csv: 'text/csv',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  zip: 'application/zip',
+}
+
+function guessMimeFromName(nameOrPath: string): string {
+  const clean = nameOrPath.split('?')[0]?.split('#')[0] ?? ''
+  const match = /\.([a-z0-9]+)$/i.exec(clean)
+  if (!match) return ''
+  return MIME_BY_EXT[match[1]!.toLowerCase()] ?? ''
+}
+
 function toDataUrl(buffer: ArrayBuffer, mimeType: string): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
@@ -160,17 +194,37 @@ async function downloadAttachment(url: string): Promise<AttachmentResult> {
     if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
       return { ok: false, error: `附件过大（${Math.round(buffer.byteLength / 1024 / 1024)} MB），已跳过` }
     }
-
-    const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim()
-      || 'application/octet-stream'
-
-    // 签名过期时文件服务回 HTML 错误页，不能当附件存下来
-    if (mimeType.startsWith('text/html')) {
-      return { ok: false, error: '附件链接已失效（签名可能过期），已跳过' }
+    if (buffer.byteLength === 0) {
+      return { ok: false, error: '附件内容为空' }
     }
 
-    const dataUrl = await toDataUrl(buffer, mimeType)
-    return { ok: true, dataUrl, mimeType, byteLength: buffer.byteLength }
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase()
+
+    /*
+     * 判断「下载到的是不是错误页」不能只看 content-type。
+     *
+     * 早期版本写 `contentType.startsWith('text/html')` 就拒绝，结果把真实的
+     * .txt / .json 附件一起丢了（实测 34 个附件漏了 5 个）。文件服务对这些
+     * 类型可能确实回 text/html，但内容是对的。
+     *
+     * 改成看内容特征：真附件不会以 HTML 文档开头。
+     */
+    const head = new TextDecoder('utf-8').decode(buffer.slice(0, 200)).trim().toLowerCase()
+    const looksLikeErrorPage = head.startsWith('<!doctype html')
+      || head.startsWith('<html')
+      || (head.includes('<head') && head.includes('</head'))
+    if (looksLikeErrorPage) {
+      return { ok: false, error: `附件返回了 HTML 错误页（content-type=${contentType}）` }
+    }
+
+    // content-type 不可信或缺失时，按扩展名补一个
+    let mime = contentType.split(';')[0].trim()
+    if (mime === '' || mime === 'text/html' || mime === 'application/octet-stream') {
+      mime = guessMimeFromName(parsed.pathname) || 'application/octet-stream'
+    }
+
+    const dataUrl = await toDataUrl(buffer, mime)
+    return { ok: true, dataUrl, mimeType: mime, byteLength: buffer.byteLength }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
