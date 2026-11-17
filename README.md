@@ -142,9 +142,23 @@ node scripts/make-icons.mjs
 
 ### 加载扩展
 
+**方式一：直接用发布包（推荐普通用户）**
+
+下载 `release/deepseek-chat-archiver-v0.1.0.zip` 并解压到一个固定目录（不要放在下载文件夹里，
+浏览器会引用该目录，删掉扩展就失效）。
+
+**方式二：自己构建**
+
+```bash
+npm install
+npm run build
+```
+
+然后：
+
 1. 打开 `chrome://extensions`（Edge 为 `edge://extensions`）
 2. 右上角开启「开发者模式」
-3. 点「加载已解压的扩展程序」，选择本项目的 `dist/` 目录
+3. 点「加载已解压的扩展程序」，选择解压后的目录（或本项目的 `dist/`）
 4. 打开 https://chat.deepseek.com 并登录
 5. 点工具栏里的扩展图标，面板从右侧滑出
 
