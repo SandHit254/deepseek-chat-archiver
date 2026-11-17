@@ -1,7 +1,7 @@
 import type { ConversationView, Message } from '../types'
 import type { BranchPoint } from '../tree'
 import { collectBranchPoints, summarizeBranches } from '../tree'
-import { formatDateTime } from './markdown'
+import { formatDateTime, formatDuration, roleLabel, sessionSummaryLines } from './common'
 
 /**
  * 纯文本渲染。
@@ -30,21 +30,6 @@ function indent(text: string, prefix = INDENT): string {
     .join('\n')
 }
 
-function roleLabel(role: Message['role']): string {
-  if (role === 'user') return '用户'
-  if (role === 'assistant') return '助手'
-  if (role === 'system') return '系统'
-  return '工具'
-}
-
-function duration(seconds?: number): string {
-  if (!seconds || seconds <= 0) return ''
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds % 60
-  return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`
-}
-
 function renderMessage(message: Message, options: TextOptions): string {
   const parts: string[] = []
   parts.push(THIN)
@@ -54,7 +39,7 @@ function renderMessage(message: Message, options: TextOptions): string {
   parts.push('')
 
   if (options.includeThinking && message.thinking.length > 0) {
-    const seconds = duration(message.thinkingSeconds)
+    const seconds = formatDuration(message.thinkingSeconds)
     parts.push(`【深度思考${seconds ? ` · 耗时 ${seconds}` : ''}】`)
     parts.push(indent(message.thinking.join('\n\n')))
     parts.push('')
@@ -123,13 +108,8 @@ export function renderText(view: ConversationView, options: TextOptions): string
   parts.push(LINE)
   parts.push(session.title)
   parts.push(LINE)
-  parts.push(`会话 ID：${session.id}`)
-  if (session.modelType) parts.push(`模型：${session.modelType}`)
-  parts.push(`创建时间：${formatDateTime(session.createdAt)}`)
-  parts.push(`更新时间：${formatDateTime(session.updatedAt)}`)
-  parts.push(`消息数：${view.activePath.length}`)
-  if (options.includeBranches && summary.points > 0) {
-    parts.push(`分叉：${summary.points} 处，未选中分支 ${summary.messages} 条（见文末附录）`)
+  for (const line of sessionSummaryLines(view, summary.points, summary.messages)) {
+    parts.push(line)
   }
   parts.push('')
 

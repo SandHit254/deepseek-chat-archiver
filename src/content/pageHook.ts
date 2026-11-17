@@ -56,11 +56,61 @@
 
   function currentToken(): string {
     if (lastToken) return lastToken
+
     try {
-      return sessionStorage.getItem(TOKEN_KEY) ?? ''
+      const cached = sessionStorage.getItem(TOKEN_KEY)
+      if (cached) return cached
     } catch {
-      return ''
+      // 忽略
     }
+
+    /*
+     * 兜底：页面还没发过任何请求时，嗅探不到 token（打开面板早于页面活动）。
+     * 此时直接读 localStorage。
+     *
+     * 注意 DeepSeek 存的可能是 JSON 信封 { value: '...', __version: '1' }，
+     * 必须取内层 value，把整个信封当 token 会被判 INVALID_TOKEN。
+     */
+    try {
+      for (const key of ['userToken', 'user_token', '__user_token__']) {
+        const raw = localStorage.getItem(key)
+        if (!raw) continue
+        const value = parseStoredToken(raw)
+        if (value) {
+          lastToken = value
+          lastTokenAt = Date.now()
+          return value
+        }
+      }
+    } catch {
+      // localStorage 不可用时忽略
+    }
+
+    return ''
+  }
+
+  /** 从 localStorage 的原始值里取出真正的 token 字符串 */
+  function parseStoredToken(raw: string): string {
+    const trimmed = raw.trim()
+    if (trimmed === '') return ''
+    if (!trimmed.startsWith('{')) return trimmed
+
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>
+      for (const key of ['value', 'token', 'access_token', 'authorization']) {
+        const candidate = parsed[key]
+        if (typeof candidate === 'string' && candidate !== '') return candidate
+      }
+      // 有些版本是 { value: { value: '...' } } 的嵌套结构
+      const nested = parsed.value
+      if (nested && typeof nested === 'object') {
+        const inner = (nested as Record<string, unknown>).value
+        if (typeof inner === 'string' && inner !== '') return inner
+      }
+    } catch {
+      // 不是合法 JSON，按原样返回
+    }
+    return trimmed
   }
 
   function publishToken(token: string | null): void {
@@ -147,13 +197,28 @@
       return
     }
 
+    /*
+     * 两件东西缺一不可：
+     *   1. Authorization —— DeepSeek 的业务鉴权头，缺了会返回 INVALID_TOKEN
+     *   2. Cookie —— WAF 层的 HWWAFSESID/HWWAFSESTIME，缺了会被 WAF 挡成 400
+     * 前者要从嗅探到的值里取，后者由 credentials:'include' 自动带。
+     */
+    const token = currentToken()
+    if (!token) {
+      reply(detail.id, { ok: false, error: 'NO_TOKEN' })
+      return
+    }
+
     // 用页面原生 fetch：Cookie 自动带上，Sec-Fetch-* 与 Origin 由浏览器补齐，
     // 与用户在页面上正常操作时完全一致。
     void originalFetch
       .call(window, detail.path, {
         method: 'GET',
         credentials: 'include',
-        headers: { accept: '*/*' },
+        headers: {
+          accept: '*/*',
+          authorization: token,
+        },
       })
       .then(async (response) => {
         const text = await response.text()

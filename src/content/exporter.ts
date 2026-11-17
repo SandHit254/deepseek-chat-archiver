@@ -5,7 +5,7 @@ import {
   type ApiRequester,
   type BatchItem,
 } from '../core/api'
-import { buildConversationView } from '../core/tree'
+import { buildConversationView, summarizeBranches } from '../core/tree'
 import { renderMarkdown } from '../core/render/markdown'
 import { renderText } from '../core/render/text'
 import { renderJson, renderBatchManifest, type ManifestEntry } from '../core/render/json'
@@ -281,13 +281,14 @@ export async function runExport(context: ExportContext, options: ExportOptions):
     }
 
     totalMessages += view.activePath.length
-    totalBranchPoints += view.branchPoints
+    // 与正文附录保持一致：只统计沿主线的分叉点，不含分支内部的深层分叉
+    totalBranchPoints += summarizeBranches(view).points
     manifestEntries.push({
       sessionId: item.session.id,
       title: item.session.title,
       folder: planned.folder,
       messages: view.activePath.length,
-      branchPoints: view.branchPoints,
+      branchPoints: summarizeBranches(view).points,
       attachments: planned.attachments.length,
     })
   }

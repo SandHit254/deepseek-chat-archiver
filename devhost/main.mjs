@@ -126,26 +126,48 @@ async function injectExtension(webContents) {
    * await waitForBridge()（最长 3 秒）之后才注册的，过早派发会被丢掉。
    * 这里等 4 秒再派发，并再探测一次确认结果。
    */
-  setTimeout(async () => {
+  /*
+   * 触发面板打开。
+   *
+   * 时机很关键：content.js 里的 window 事件监听器是在
+   * await waitForBridge()（最长 3 秒）之后才注册的，过早派发会被丢掉。
+   * 而且 SPA 可能在这期间重渲染，把 host 冲掉。
+   * 因此改成轮询：反复派发直到面板真的出现为止。
+   */
+  let attempts = 0
+  const tryOpen = async () => {
     if (webContents.isDestroyed()) return
+    attempts += 1
     try {
+      // 用「打开」而不是「切换」：轮询时反复切换会让面板开了又关
       await webContents.executeJavaScript(
-        `window.dispatchEvent(new CustomEvent('ds-archiver:toggle-panel')); true`,
+        `window.dispatchEvent(new CustomEvent('ds-archiver:open-panel')); true`,
         true,
       )
-      await new Promise((resolve) => setTimeout(resolve, 600))
-      const after = await probeState(webContents)
-      console.log('[devhost] 状态（打开面板后）：', JSON.stringify(after))
+      await new Promise((resolve) => setTimeout(resolve, 500))
 
-      // 自动截图：直接看真实渲染结果，比读 DOM 状态更可靠
-      const shotPath = join(app.getPath('temp'), 'ds-archiver-shot.png')
-      const image = await webContents.capturePage()
-      await writeFile(shotPath, image.toPNG())
-      console.log(`[devhost] 截图已保存：${shotPath}`)
+      const state = await probeState(webContents)
+      // 面板已开且会话列表已就绪就停；否则继续重试（最多 20 次）
+      const listLoaded = state.sessionItems > 0 || (state.statusText && state.statusText.includes('共'))
+      if ((state.panelRendered && listLoaded) || attempts >= 20) {
+        console.log('[devhost] 状态（打开面板后）：', JSON.stringify(state))
+        const shotPath = join(app.getPath('temp'), 'ds-archiver-shot.png')
+        const image = await webContents.capturePage()
+        await writeFile(shotPath, image.toPNG())
+        console.log(`[devhost] 截图已保存：${shotPath}`)
+
+        // 列表就绪后，若开启了自动导出，则点一次「开始导出」
+        if (listLoaded && process.argv.includes('--auto-export')) {
+          await runExportFlow(webContents)
+        }
+        return
+      }
+      setTimeout(() => { void tryOpen() }, 800)
     } catch (error) {
       console.error('[devhost] 触发面板失败：', error instanceof Error ? error.message : String(error))
     }
-  }, 4000)
+  }
+  setTimeout(() => { void tryOpen() }, 3500)
 }
 
 /**
@@ -158,6 +180,75 @@ const PROBE_SOURCE = `(() => {
   const host = document.getElementById('ds-archiver-host');
   const root = host && host.shadowRoot;
   const fetchPatched = !String(window.fetch).includes('[native code]');
+
+  // 顺便把 token 存储位置探出来，用于校准 pageHook 的兜底读取
+  let tokenKeys = [];
+  try {
+    tokenKeys = Object.keys(localStorage).filter(k => /token|auth|user/i.test(k));
+  } catch { /* 忽略 */ }
+
+  // 直接验证 pageHook 内部的 token 读取链路是否通畅
+  const chain = (() => {
+    try {
+      // 复制 pageHook 的解析逻辑，验证能否从 userToken 拿到干净 token
+      const raw = localStorage.getItem('userToken');
+      if (!raw) return { step: 'no-raw' };
+      const trimmed = raw.trim();
+      if (!trimmed.startsWith('{')) return { step: 'plain', len: trimmed.length };
+      const parsed = JSON.parse(trimmed);
+      const v = parsed.value;
+      if (typeof v === 'string') return { step: 'parsed-string', len: v.length, looksJwt: v.split('.').length === 3 };
+      return { step: 'parsed-other', type: typeof v };
+    } catch (e) {
+      return { step: 'error', message: String(e) };
+    }
+  })();
+
+  // 检查 sessionStorage 里有没有我们缓存过的 token
+  const cached = (() => {
+    try {
+      const v = sessionStorage.getItem('__ds_archiver_token__');
+      return v ? { present: true, len: v.length, preview: v.slice(0, 10) } : { present: false };
+    } catch { return { present: false, error: 'blocked' }; }
+  })();
+  const tokenDiag = (() => {
+    try {
+      const raw = localStorage.getItem('userToken');
+      if (!raw) return { present: false };
+      const trimmed = raw.trim();
+      const shape = trimmed.startsWith('{') ? 'json' : 'plain';
+      let innerKeys = [];
+      let valuePreview = null;
+      if (shape === 'json') {
+        const obj = JSON.parse(trimmed);
+        innerKeys = Object.keys(obj);
+        const v = obj.value;
+        if (typeof v === 'string') valuePreview = v.slice(0, 12) + '...(len=' + v.length + ')';
+        else if (v && typeof v === 'object') {
+          innerKeys = innerKeys.concat('value.' + Object.keys(v).join(','));
+          if (typeof v.value === 'string') valuePreview = v.value.slice(0, 12) + '...(len=' + v.value.length + ')';
+        }
+      } else {
+        valuePreview = trimmed.slice(0, 12) + '...(len=' + trimmed.length + ')';
+      }
+      return { present: true, shape, innerKeys, valuePreview, rawLength: trimmed.length };
+    } catch (e) {
+      return { present: true, error: String(e) };
+    }
+  })();
+
+  const tokenSample = (() => {
+    try {
+      for (const k of tokenKeys) {
+        const v = localStorage.getItem(k);
+        if (v && v.length > 10) {
+          return { key: k, looksLikeJson: v.trim().startsWith('{'), length: v.length };
+        }
+      }
+    } catch { /* 忽略 */ }
+    return null;
+  })();
+
   return {
     url: location.href,
     pageHookInjected: fetchPatched,
@@ -168,6 +259,11 @@ const PROBE_SOURCE = `(() => {
     exportButtonText: root ? (root.querySelector('#btnExport')?.textContent ?? null) : null,
     cssVarApplied: host ? getComputedStyle(host).getPropertyValue('--ds-primary').trim() : null,
     hasToken: (() => { try { return !!sessionStorage.getItem('__ds_archiver_token__'); } catch { return false; } })(),
+    tokenKeys,
+    tokenSample,
+    tokenDiag,
+    chain,
+    cached,
   };
 })()`
 
@@ -177,6 +273,114 @@ async function probeState(webContents) {
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * 自动跑一遍导出流程。
+ *
+ * 只选前 2 个会话，避免一次导出 345 个把调试拖成几十分钟（每个会话之间
+ * 有 800ms 限流间隔）。验证目标是链路通不通，不是跑满全量。
+ */
+async function runExportFlow(webContents) {
+  console.log('\n[devhost] ===== 开始自动导出验证 =====')
+
+  // 1. 只保留前两个会话，并开启全部格式
+  const selected = await webContents.executeJavaScript(`(() => {
+    const host = document.getElementById('ds-archiver-host');
+    const root = host && host.shadowRoot;
+    if (!root) return { ok: false, reason: '面板不存在' };
+
+    const items = root.querySelectorAll('.ds-item input[type=checkbox]');
+    // 取消所有勾选
+    for (const box of items) {
+      if (box.checked) box.click();
+    }
+    // 勾选前两个
+    for (let i = 0; i < Math.min(2, items.length); i += 1) {
+      items[i].click();
+    }
+    // 全选四种格式，验证 docx/json 链路
+    for (const box of root.querySelectorAll('input[name=format]')) {
+      if (!box.checked) box.click();
+    }
+    const formats = Array.from(root.querySelectorAll('input[name=format]')).map(b => b.value + ':' + b.checked);
+    return {
+      ok: true,
+      total: items.length,
+      checked: root.querySelector('#sessionCount')?.textContent,
+      buttonText: root.querySelector('#btnExport')?.textContent,
+      formats,
+    };
+  })()`, true)
+  console.log('[devhost] 选择结果：', JSON.stringify(selected))
+
+  if (!selected.ok) return
+
+  // 2. 点击「开始导出」
+  await webContents.executeJavaScript(`(() => {
+    const host = document.getElementById('ds-archiver-host');
+    const root = host && host.shadowRoot;
+    const btn = root.querySelector('#btnExport');
+    if (btn) btn.click();
+    return true;
+  })()`, true)
+
+  // 3. 轮询进度，直到完成或超时
+  const startedAt = Date.now()
+  const timeoutMs = 5 * 60 * 1000
+  let lastLabel = ''
+
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    if (webContents.isDestroyed()) return
+
+    const progress = await webContents.executeJavaScript(`(() => {
+      const host = document.getElementById('ds-archiver-host');
+      const root = host && host.shadowRoot;
+      if (!root) return { gone: true };
+      return {
+        label: root.querySelector('#progressLabel')?.textContent ?? '',
+        counter: root.querySelector('#progressCounter')?.textContent ?? '',
+        progressHidden: root.querySelector('#progressCard')?.hidden,
+        resultHidden: root.querySelector('#resultCard')?.hidden,
+        resultTitle: root.querySelector('#resultTitle')?.textContent ?? '',
+        stats: root.querySelector('#resultStats')?.innerText ?? '',
+        errors: Array.from(root.querySelectorAll('#errorList li')).map(li => li.textContent),
+        toast: root.querySelector('#toast')?.hidden ? '' : (root.querySelector('#toast')?.textContent ?? ''),
+      };
+    })()`, true)
+
+    if (progress.gone) {
+      console.log('[devhost] 面板消失，可能页面重载')
+      return
+    }
+
+    const label = `${progress.label} ${progress.counter} ${progress.toast}`
+    if (label.trim() !== lastLabel.trim()) {
+      lastLabel = label
+      console.log(`[devhost] 进度：${progress.label} ${progress.counter} ${progress.toast ? `| toast: ${progress.toast}` : ''}`)
+    }
+
+    // 结果卡片出现 = 流程结束
+    if (!progress.resultHidden) {
+      console.log(`\n[devhost] ===== 导出完成：${progress.resultTitle} =====`)
+      console.log('[devhost] 统计：')
+      for (const line of progress.stats.split('\n')) {
+        if (line.trim()) console.log(`  ${line}`)
+      }
+      if (progress.errors.length > 0) {
+        console.log('[devhost] 未完成项：')
+        for (const error of progress.errors) console.log(`  - ${error}`)
+      }
+      const shotPath = join(app.getPath('temp'), 'ds-archiver-result.png')
+      const image = await webContents.capturePage()
+      await writeFile(shotPath, image.toPNG())
+      console.log(`[devhost] 结果截图：${shotPath}`)
+      return
+    }
+  }
+
+  console.log('[devhost] 导出超时（5 分钟）')
 }
 
 function createWindow({ openDevTools }) {
@@ -280,16 +484,29 @@ app.whenReady().then(() => {
       const comma = dataUrl.indexOf(',')
       if (comma < 0) return { ok: false, error: '归档数据格式不正确' }
 
-      const result = await dialog.showSaveDialog({
-        defaultPath: join(app.getPath('downloads'), filename),
-        filters: [{ name: 'ZIP 归档', extensions: ['zip'] }],
-      })
-      if (result.canceled || !result.filePath) {
-        return { ok: false, error: '已取消保存' }
+      /*
+       * 自动化验证模式下不弹窗，直接写到临时目录。
+       * 否则对话框会阻塞整条自动流程，无人值守就跑不下去。
+       */
+      const autoMode = process.argv.includes('--auto-export')
+      let targetPath
+      if (autoMode) {
+        targetPath = join(app.getPath('temp'), filename)
+      } else {
+        const result = await dialog.showSaveDialog({
+          defaultPath: join(app.getPath('downloads'), filename),
+          filters: [{ name: 'ZIP 归档', extensions: ['zip'] }],
+        })
+        if (result.canceled || !result.filePath) {
+          return { ok: false, error: '已取消保存' }
+        }
+        targetPath = result.filePath
       }
-      await writeFile(result.filePath, Buffer.from(dataUrl.slice(comma + 1), 'base64'))
-      console.log(`[devhost] 归档已保存：${result.filePath}`)
-      return { ok: true, path: result.filePath }
+
+      await writeFile(targetPath, Buffer.from(dataUrl.slice(comma + 1), 'base64'))
+      const stat = await readFile(targetPath).then((buffer) => buffer.length).catch(() => 0)
+      console.log(`[devhost] 归档已保存：${targetPath}（${Math.round(stat / 1024)} KB）`)
+      return { ok: true, path: targetPath }
     }
 
     return { ok: false, error: `未实现的调用：${String(type)}` }

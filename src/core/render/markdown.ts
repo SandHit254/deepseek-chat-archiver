@@ -1,6 +1,13 @@
 import type { ConversationView, Message, Attachment } from '../types'
 import type { BranchEntry, BranchPoint } from '../tree'
 import { collectBranchPoints, summarizeBranches } from '../tree'
+import {
+  formatDateTime,
+  formatDuration,
+  linkCitations,
+  roleLabel,
+  yamlString,
+} from './common'
 
 /**
  * Markdown 渲染。
@@ -25,59 +32,6 @@ export interface RenderOptions {
   attachmentPaths?: Map<string, string[]>
   /** 批次生成时间，写进 YAML frontmatter */
   exportedAt?: Date
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, '0')
-}
-
-export function formatDateTime(epochSeconds: number): string {
-  if (!epochSeconds) return '未知时间'
-  const date = new Date(epochSeconds * 1000)
-  if (Number.isNaN(date.getTime())) return '未知时间'
-  const offset = -date.getTimezoneOffset()
-  const sign = offset >= 0 ? '+' : '-'
-  const absolute = Math.abs(offset)
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} `
-    + `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} `
-    + `UTC${sign}${pad2(Math.floor(absolute / 60))}:${pad2(absolute % 60)}`
-}
-
-function formatDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0) return ''
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds % 60
-  return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`
-}
-
-/** YAML frontmatter 的值需要转义，标题里带冒号/引号很常见 */
-function yamlString(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-}
-
-function roleLabel(role: Message['role']): string {
-  if (role === 'user') return '用户'
-  if (role === 'assistant') return '助手'
-  if (role === 'system') return '系统'
-  return '工具'
-}
-
-/**
- * 引用角标转成可点击链接。
- *
- * DeepSeek 正文里用的是 [reference:0] 这种相对序号，必须结合 sources 才能
- * 还原成真实 URL，否则导出后就成了一堆无意义的标记。
- */
-function linkCitations(text: string, message: Message): string {
-  if (message.sources.length === 0) return text
-  return text.replace(/\[reference:(\d+)\]/g, (match, rawIndex: string) => {
-    const wanted = Number(rawIndex)
-    const source = message.sources.find((item) => item.index === wanted)
-      ?? message.sources[wanted]
-    if (!source) return match
-    return `[${wanted + 1}](${source.url})`
-  })
 }
 
 function renderThinking(message: Message, options: RenderOptions): string {

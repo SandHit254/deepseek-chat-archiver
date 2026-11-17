@@ -196,6 +196,11 @@ async function bootstrap(): Promise<void> {
     togglePanel()
   })
 
+  // 只打开、不切换：调试宿主轮询时用，避免反复 toggle 导致开了又关
+  window.addEventListener('ds-archiver:open-panel', () => {
+    if (!isOpen) openPanel()
+  })
+
   watchBody()
   void chrome.runtime.sendMessage({ type: 'content:ready' }).catch(() => undefined)
 }

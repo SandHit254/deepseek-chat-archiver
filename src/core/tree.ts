@@ -331,5 +331,7 @@ export function summarizeBranches(view: ConversationView): { points: number; mes
     }
   }
   walk(points)
+  // points 只统计「沿主线」的分叉点，与正文提示数量一致；
+  // 深层分支（分支内部又分叉）只计入 messages，不重复计数。
   return { points: points.length, messages }
 }

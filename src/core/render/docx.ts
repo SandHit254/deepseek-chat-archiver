@@ -19,7 +19,7 @@ import type { BranchPoint } from '../tree'
 import { collectBranchPoints, summarizeBranches } from '../tree'
 import { parseMarkdown } from '../markdown'
 import type { Block, InlineToken } from '../markdown'
-import { formatDateTime } from './markdown'
+import { formatDateTime, spaceCjk } from './common'
 
 /**
  * Word 文档生成。
@@ -82,14 +82,6 @@ function headingLevel(level: number): (typeof HeadingLevel)[keyof typeof Heading
     HeadingLevel.HEADING_6,
   ]
   return map[Math.min(level, 6) - 1] ?? HeadingLevel.HEADING_6
-}
-
-/**
- * 中英文之间插一个空格，Word 里不插会显得挤在一起。
- * 只在纯文本节点上做，代码块里绝不能加。
- */
-function spaceCjk(text: string): string {
-  return text.replace(/([\u3400-\u9fff])([A-Za-z0-9])/g, '$1 $2').replace(/([A-Za-z0-9])([\u3400-\u9fff])/g, '$1 $2')
 }
 
 function blocksToParagraphs(blocks: Block[], listCounter: { value: number }): Array<Paragraph | Table> {

@@ -120,13 +120,22 @@ interface FetchPageResult {
  */
 async function fetchSessionPage(
   request: ApiRequester,
-  cursor: { pinned: number; updatedAt: number } | null,
+  cursor: { pinned: boolean; updatedAt: number } | null,
   options: RequestOptions,
 ): Promise<FetchPageResult> {
   const query = new URLSearchParams()
   query.set('count', String(SESSION_PAGE_SIZE))
   if (cursor) {
-    query.set('lte_cursor.pinned', String(cursor.pinned))
+    /*
+     * 服务端要求字符串形式的布尔值（"true"/"false"）。
+     *
+     * 早期版本写成 0/1，直接返回
+     *   400 Failed to deserialize query string: lte_cursor.pinned:
+     *       provided string was not `true` or `false`
+     * 这个错误只有在拿到有效 token 之后才会暴露，所以很容易被前面的
+     * 鉴权问题掩盖。
+     */
+    query.set('lte_cursor.pinned', cursor.pinned ? 'true' : 'false')
     query.set('lte_cursor.updated_at', String(cursor.updatedAt))
   }
 
@@ -155,7 +164,7 @@ export async function fetchAllSessions(
 ): Promise<Session[]> {
   const sessions: Session[] = []
   const seen = new Set<string>()
-  let cursor: { pinned: number; updatedAt: number } | null = null
+  let cursor: { pinned: boolean; updatedAt: number } | null = null
   let lastSignature = ''
 
   for (let page = 0; page < MAX_SESSION_COUNT; page += 1) {
@@ -174,8 +183,8 @@ export async function fetchAllSessions(
     if (!result.hasMore) break
 
     const last = result.sessions[result.sessions.length - 1]!
-    const nextCursor = { pinned: last.pinned ? 1 : 0, updatedAt: last.updatedAt }
-    const signature = `${nextCursor.pinned}:${nextCursor.updatedAt}`
+    const nextCursor = { pinned: last.pinned, updatedAt: last.updatedAt }
+    const signature = `${String(nextCursor.pinned)}:${nextCursor.updatedAt}`
     if (signature === lastSignature) break
     lastSignature = signature
     cursor = nextCursor

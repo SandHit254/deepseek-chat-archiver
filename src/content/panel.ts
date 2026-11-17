@@ -2,7 +2,7 @@ import type { ApiRequester } from '../core/api'
 import { fetchAllSessions } from '../core/api'
 import { runExport, type ExportResult } from './exporter'
 import type { Session } from '../core/types'
-import { formatDateTime } from '../core/render/markdown'
+import { formatDateTime } from '../core/render/common'
 
 /**
  * 归档面板。
