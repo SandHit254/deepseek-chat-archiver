@@ -1,0 +1,25 @@
+{
+  "name": "deepseek-chat-archiver",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek 网页端对话无损归档扩展：批量导出全部会话、思考过程、附件与分支",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "docx": "^9.5.1",
+    "fflate": "^0.8.2",
+    "preact": "^10.27.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.31",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepSeek Chat Archiver</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="ds-header">
+    <div class="ds-header-main">
+      <h1 class="ds-title">DeepSeek 对话归档</h1>
+      <p class="ds-subtitle">正文 · 思考过程 · 联网引用 · 附件 · 分支</p>
+    </div>
+    <button type="button" class="ds-icon-btn" id="btnClose" title="关闭面板" aria-label="关闭面板">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </header>
+
+  <main class="ds-body">
+    <!-- 连接状态：拿不到登录态时这是唯一的出口 -->
+    <section class="ds-card ds-status" id="statusCard" aria-live="polite">
+      <span class="ds-dot" id="statusDot"></span>
+      <span id="statusText">正在检测登录状态…</span>
+      <button type="button" class="ds-link-btn" id="btnReload" hidden>刷新页面</button>
+    </section>
+
+    <!-- 会话选择 -->
+    <section class="ds-card" id="sessionsCard">
+      <div class="ds-card-head">
+        <h2 class="ds-card-title">选择会话</h2>
+        <span class="ds-badge" id="sessionCount">—</span>
+      </div>
+      <div class="ds-toolbar">
+        <button type="button" class="ds-link-btn" id="btnSelectAll">全选</button>
+        <span class="ds-divider" aria-hidden="true"></span>
+        <button type="button" class="ds-link-btn" id="btnSelectNone">清空</button>
+        <input type="search" class="ds-search" id="sessionSearch" placeholder="按标题筛选" autocomplete="off">
+      </div>
+      <div class="ds-list" id="sessionList" role="group" aria-label="会话列表">
+        <div class="ds-skeleton">
+          <div class="ds-skeleton-row"></div>
+          <div class="ds-skeleton-row"></div>
+          <div class="ds-skeleton-row"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 导出选项 -->
+    <section class="ds-card">
+      <div class="ds-card-head">
+        <h2 class="ds-card-title">导出内容</h2>
+      </div>
+
+      <fieldset class="ds-fieldset">
+        <legend class="ds-legend">文件格式</legend>
+        <div class="ds-chips" id="formatChips">
+          <label class="ds-chip">
+            <input type="checkbox" name="format" value="md" checked>
+            <span>Markdown</span>
+          </label>
+          <label class="ds-chip">
+            <input type="checkbox" name="format" value="docx">
+            <span>Word</span>
+          </label>
+          <label class="ds-chip">
+            <input type="checkbox" name="format" value="txt">
+            <span>纯文本</span>
+          </label>
+          <label class="ds-chip">
+            <input type="checkbox" name="format" value="json">
+            <span>JSON</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="ds-fieldset">
+        <legend class="ds-legend">包含</legend>
+        <div class="ds-switches">
+          <label class="ds-switch">
+            <input type="checkbox" id="optThinking" checked>
+            <span class="ds-switch-track" aria-hidden="true"></span>
+            <span class="ds-switch-label">思考过程</span>
+          </label>
+          <label class="ds-switch">
+            <input type="checkbox" id="optSources" checked>
+            <span class="ds-switch-track" aria-hidden="true"></span>
+            <span class="ds-switch-label">联网引用</span>
+          </label>
+          <label class="ds-switch">
+            <input type="checkbox" id="optBranches" checked>
+            <span class="ds-switch-track" aria-hidden="true"></span>
+            <span class="ds-switch-label">分支对话</span>
+          </label>
+          <label class="ds-switch">
+            <input type="checkbox" id="optAttachments" checked>
+            <span class="ds-switch-track" aria-hidden="true"></span>
+            <span class="ds-switch-label">附件另存</span>
+          </label>
+        </div>
+      </fieldset>
+    </section>
+
+    <!-- 进度 -->
+    <section class="ds-card" id="progressCard" hidden>
+      <div class="ds-progress-head">
+        <span class="ds-progress-label" id="progressLabel">准备中…</span>
+        <span class="ds-progress-counter" id="progressCounter"></span>
+      </div>
+      <div class="ds-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBarWrap">
+        <div class="ds-progress-fill" id="progressBar"></div>
+      </div>
+    </section>
+
+    <!-- 结果 -->
+    <section class="ds-card ds-result" id="resultCard" hidden>
+      <div class="ds-card-head">
+        <h2 class="ds-card-title" id="resultTitle">导出完成</h2>
+      </div>
+      <dl class="ds-stats" id="resultStats"></dl>
+      <details class="ds-errors" id="errorDetails" hidden>
+        <summary>查看未完成项</summary>
+        <ul class="ds-error-list" id="errorList"></ul>
+      </details>
+    </section>
+  </main>
+
+  <footer class="ds-footer">
+    <button type="button" class="ds-btn ds-btn-primary" id="btnExport">开始导出</button>
+    <button type="button" class="ds-btn ds-btn-ghost" id="btnCancel" hidden>取消</button>
+  </footer>
+
+  <div class="ds-toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="panel.js" type="module"></script>
+</body>
+</html>
