@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 /**
- * 依次构建三个 IIFE 入口，再补上 manifest、图标与面板 HTML。
+ * 依次构建三个 IIFE 入口，再补上 manifest 与图标。
  *
  * 顺序有意义：content 先跑（负责清空 dist），background / pageHook 追加。
  */
@@ -28,12 +28,16 @@ const manifest = JSON.parse(readFileSync(join(root, 'public/manifest.json'), 'ut
 manifest.version = pkg.version
 writeFileSync(join(root, 'dist/manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 
-// 静态资源：面板页面、样式、图标
-for (const item of ['panel.html', 'panel.css', 'icons']) {
-  const from = join(root, 'public', item)
-  const to = join(root, 'dist', item)
-  mkdirSync(dirname(to), { recursive: true })
-  cpSync(from, to, { recursive: true })
-}
+/*
+ * 静态资源：只需要图标。
+ *
+ * panel.html / panel.css 的内容已在构建时内联进 content.js（见 vite.config.ts
+ * 的 __PANEL_HTML__ / __PANEL_CSS__），不再复制到 dist——否则包里会多两个
+ * 永远用不到的文件，徒增困惑。
+ */
+const iconsFrom = join(root, 'public', 'icons')
+const iconsTo = join(root, 'dist', 'icons')
+mkdirSync(dirname(iconsTo), { recursive: true })
+cpSync(iconsFrom, iconsTo, { recursive: true })
 
 console.warn('\n构建完成 → dist/')

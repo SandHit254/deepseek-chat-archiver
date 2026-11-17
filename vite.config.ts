@@ -61,6 +61,14 @@ export default defineConfig({
       '@': resolve(root, 'src'),
     },
   },
+  /*
+   * 关掉 public 目录的自动拷贝。
+   *
+   * vite 默认会把 public/ 整个复制到 dist/，但我们的 manifest、图标由
+   * scripts/build.mjs 显式处理，而 panel.html / panel.css 已内联进
+   * content.js——自动拷贝只会往最终包里塞冗余文件。
+   */
+  publicDir: false,
   define: {
     __PANEL_HTML__: JSON.stringify(panelAssets.html),
     __PANEL_CSS__: JSON.stringify(panelAssets.css),
