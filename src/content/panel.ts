@@ -16,6 +16,11 @@ import { formatDateTime } from '../core/render/markdown'
 export interface PanelOptions {
   /** 复用已有请求器，避免每次导出都重建桥 */
   request: ApiRequester
+  /**
+   * 面板根节点。必须由调用方传入——面板挂在 Shadow DOM 里，
+   * document.querySelector 查不到 shadow tree 内的元素。
+   */
+  root: HTMLElement
   onClose(): void
 }
 
@@ -36,7 +41,7 @@ function query<T extends Element>(selector: string, root: ParentNode = document)
 }
 
 export function mountPanel(options: PanelOptions): { destroy(): void } {
-  const root = query<HTMLElement>('#ds-archiver-panel')
+  const root = options.root
   const statusCard = query<HTMLElement>('#statusCard', root)
   const statusText = query<HTMLElement>('#statusText', root)
   const btnReload = query<HTMLButtonElement>('#btnReload', root)

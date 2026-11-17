@@ -79,10 +79,20 @@ function openPanel(): void {
       // background 未就绪，忽略
     })
 
-    teardown = mountPanel({
-      request: createBackgroundRequester(),
-      onClose: () => closePanel(),
-    }).destroy
+    // 挂载失败必须让用户看见。否则面板会停在「正在检测登录状态…」，
+    // 界面上毫无线索——早期版本就是这样静默失效的。
+    try {
+      teardown = mountPanel({
+        request: createBackgroundRequester(),
+        // 面板在 Shadow DOM 内，必须把根节点传进去
+        root: wrapper,
+        onClose: () => closePanel(),
+      }).destroy
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[DeepSeek Archiver] 面板挂载失败', error)
+      reportFatal(wrapper, message)
+    }
   }
 
   isOpen = true
@@ -108,6 +118,44 @@ function closePanel(): void {
 function togglePanel(): void {
   if (isOpen) closePanel()
   else openPanel()
+}
+
+/**
+ * 面板自身出故障时的兜底提示。
+ *
+ * 直接在面板区域里渲染错误，而不是只往控制台打日志——用户不会去翻
+ * 控制台，看到的只是一个永远停在「正在检测登录状态」的空壳。
+ */
+function reportFatal(root: HTMLElement, message: string): void {
+  const body = root.querySelector<HTMLElement>('.ds-body')
+  const target = body ?? root
+  target.replaceChildren()
+
+  const box = document.createElement('section')
+  box.className = 'ds-card'
+
+  const title = document.createElement('h2')
+  title.className = 'ds-card-title'
+  title.textContent = '面板加载失败'
+
+  const detail = document.createElement('p')
+  detail.style.margin = '8px 0 0'
+  detail.style.fontSize = '12px'
+  detail.style.color = '#64748b'
+  detail.style.wordBreak = 'break-word'
+  detail.textContent = message
+
+  const hint = document.createElement('p')
+  hint.style.margin = '8px 0 0'
+  hint.style.fontSize = '12px'
+  hint.style.color = '#64748b'
+  hint.textContent = '刷新页面后重试；若持续失败，请在扩展管理页重新加载扩展。'
+
+  box.append(title, detail, hint)
+  target.append(box)
+
+  const footer = root.querySelector<HTMLElement>('.ds-footer')
+  footer?.replaceChildren()
 }
 
 /** SPA 路由切换可能重建 body，把面板补回来 */
