@@ -4,15 +4,22 @@
  * 约束来源（frontend-guidelines）：
  * - 主色 #3b82f6，正文 #1e293b，辅助 #64748b，页面底 #f0f2f5，卡片白
  * - 间距按 4 / 8 / 12 / 16 / 24 / 32 基准
- * - 圆角 8-12px，正文 14px / 行高 1.6
+ * - 圆角 8-12px，正文 13-14px / 行高 1.6
  * - 过渡 150-300ms
  *
  * 不引入 Bootstrap：扩展面板要嵌进 DeepSeek 页面，引入整套 CSS 会污染宿主
  * 样式（DeepSeek 自己用了同名类名）。这里只用手写的最小样式集，全部加 ds-
  * 前缀隔离。
+ *
+ * 重要：本样式表运行在 Shadow DOM 内（见 content/index.ts）。
+ * Shadow tree 里 **不存在** :root / html / body，所以：
+ *   - CSS 变量必须定义在 :host 上（宿主元素），才能被内部元素继承
+ *   - 布局容器改用 #ds-archiver-panel（面板根节点），不能写 body
+ * 早期版本误用了 :root 与 body，导致所有变量失效、布局崩塌。
  */
 
-:root {
+:host {
+  /* 变量挂在宿主上；宿主是页面内元素，故内部所有元素都能继承到 */
   --ds-primary: #3b82f6;
   --ds-primary-dark: #2563eb;
   --ds-success: #22c55e;
@@ -31,26 +38,42 @@
   --ds-gap-4: 16px;
   --ds-gap-6: 24px;
   --ds-transition: 180ms ease;
-}
 
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-}
-
-body {
-  display: flex;
-  flex-direction: column;
+  /* 显式重置字体，避免继承 DeepSeek 宿主页面的排版 */
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
   font-size: 13px;
   line-height: 1.6;
   color: var(--ds-text);
+  text-align: left;
+}
+
+:host *,
+:host *::before,
+:host *::after {
+  box-sizing: border-box;
+}
+
+/*
+ * hidden 属性必须能压过自定义 display。
+ *
+ * 浏览器默认只给 [hidden] 设 display:none，优先级极低；而 .ds-btn 设了
+ * inline-flex、.ds-footer 设了 flex，都会把它覆盖掉，导致「隐藏」的元素
+ * 照样显示（早期版本底部总挂着一个不该出现的「取消」按钮就是这个原因）。
+ */
+[hidden] {
+  display: none !important;
+}
+
+/* 面板根节点充当「页面」角色：高度撑满宿主，纵向三段式布局 */
+#ds-archiver-panel {
+  position: relative; /* toast 等浮层的定位上下文 */
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
   background: var(--ds-bg);
   overflow: hidden;
 }
@@ -124,6 +147,8 @@ body {
 }
 
 .ds-card {
+  /* flex 纵向容器里卡片会被压缩，必须禁止收缩，否则列表区会被挤成一条 */
+  flex-shrink: 0;
   padding: var(--ds-gap-3);
   background: var(--ds-card);
   border: 1px solid var(--ds-border);
@@ -581,7 +606,10 @@ body {
   padding: var(--ds-gap-3) var(--ds-gap-4);
   background: var(--ds-card);
   border-top: 1px solid var(--ds-border);
+  /* 固定在底部，不参与滚动，也不被内容遮挡 */
   flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 
 .ds-btn {
@@ -650,7 +678,12 @@ body {
  * ------------------------------------------------------------------ */
 
 .ds-toast {
-  position: fixed;
+  /*
+   * 用 absolute 而非 fixed：面板根节点是定位上下文，toast 应当贴在面板底部，
+   * 而不是相对浏览器视口。Shadow DOM 里 fixed 的参照物还会受宿主 transform
+   * 影响，行为不可靠。
+   */
+  position: absolute;
   left: var(--ds-gap-3);
   right: var(--ds-gap-3);
   bottom: 72px;
@@ -662,6 +695,7 @@ body {
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
   animation: ds-toast-in 200ms ease;
   z-index: 20;
+  pointer-events: none;
 }
 
 .ds-toast[data-kind='error'] {

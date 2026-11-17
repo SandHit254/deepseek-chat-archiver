@@ -182,6 +182,12 @@ export function mountPanel(options: PanelOptions): { destroy(): void } {
       btnExport.disabled = true
       return
     }
+    if (state.phase === 'done') {
+      // 完成态保留「再次导出」文案，不被选择数覆盖
+      btnExport.disabled = count === 0
+      if (btnExport.textContent !== '再次导出') btnExport.textContent = '再次导出'
+      return
+    }
     btnExport.disabled = count === 0
     btnExport.textContent = count === 0 ? '请选择会话' : `导出 ${count} 个会话`
   }
@@ -286,8 +292,8 @@ export function mountPanel(options: PanelOptions): { destroy(): void } {
     }
   }
 
-  function setExporting(active: boolean): void {
-    state.phase = active ? 'exporting' : 'idle'
+  function setExporting(active: boolean, nextPhase: PanelState['phase'] = 'idle'): void {
+    state.phase = active ? 'exporting' : nextPhase
     btnCancel.hidden = !active
     if (active) {
       btnExport.disabled = true
@@ -358,8 +364,10 @@ export function mountPanel(options: PanelOptions): { destroy(): void } {
 
       renderResult(result)
       showToast(`已导出 ${result.summary.succeeded} 个会话`, 'success')
-      setExporting(false)
-      state.phase = 'done'
+      // 传入 done 让 updateFooter 走完成态分支，保留「再次导出」文案
+      setExporting(false, 'done')
+      // 导出结束后进度条没有意义了，收起以免和结果卡片混在一起
+      progressCard.hidden = true
       btnExport.textContent = '再次导出'
       btnExport.disabled = false
     } catch (error) {
